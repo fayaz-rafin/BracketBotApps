@@ -1,8 +1,6 @@
 # /// script
 # dependencies = [
-#   "ultralytics",
-#   "turbojpeg-rpi",
-#   "openvino",
+#   "soundfile",
 #   "bbos",
 # ]
 # [tool.uv.sources]
@@ -45,6 +43,7 @@ with Reader("audio.mic") as r_mic:
         if r_mic.ready():
             i += 1
             chunk = r_mic.data["audio"]
+            print(chunk.max(), chunk.min())
             sf_writer.write(chunk)
             print(r_mic.data["timestamp"])
 sf_writer.close()
