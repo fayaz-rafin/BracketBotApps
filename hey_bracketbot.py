@@ -12,6 +12,8 @@ from bbos.app_manager import start_app, stop_app
 import metaphone
 import textdistance
 import numpy as np
+import subprocess
+import socket
 
 CFG = Config("transcriber")
 CFG_LED_STRIP = Config("led_strip")
@@ -41,6 +43,25 @@ def detect_wake_word(text, target_word):
     
     return False
 
+def speak_hostname():
+    """Get the hostname and speak it using kokoro TTS"""
+    try:
+        # Get the hostname
+        hostname = socket.gethostname()
+        print(f"Speaking hostname: {hostname}", flush=True)
+        
+        # Run kokoro TTS - it now checks cache first before importing heavy stuff
+        subprocess.run([
+            "uv", "run",
+            "/home/bracketbot/BracketBotApps/kokoro/main.py", 
+            hostname
+        ], check=True, cwd="/home/bracketbot/BracketBotApps/kokoro")
+        
+        return True
+    except Exception as e:
+        print(f"Error speaking hostname: {e}", flush=True)
+        return False
+
 def main():
     with Reader("transcript") as r_transcript, \
          Writer("led_strip.ctrl", Type('led_strip_ctrl')) as w_led_strip:
@@ -62,6 +83,9 @@ def main():
                     if detect_wake_word(text, "quiet"):
                         stop_app("realtime")
                         color = [0, 0, 0]
+                    if detect_wake_word(text, "number"):
+                        speak_hostname()
+                        color = [0, 255, 255]  # Cyan color for number speaking
             rgb_array[:, :] = color
             w_led_strip["rgb"] = rgb_array
     stop_app("follow")
