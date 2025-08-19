@@ -1,0 +1,818 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>BracketBot Flow Dashboard</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <link rel="stylesheet" href="https://unpkg.com/reactflow@11/dist/style.css" />
+  <style>
+    :root{
+      --bg:#0a0a0a;--panel:#1a1a1a;--muted:#9ca3af;--border:#333;--run:#10b981;--err:#ef4444;--stop:#6b7280;
+      --dot:#222;--text:#fff
+    }
+    html,body,#root{height:100%;margin:0;background:var(--bg);font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;color:var(--text)}
+    /* nodes */
+    .daemon{background:var(--panel);border:2px solid var(--border);border-radius:12px;padding:12px;width:560px;min-width:560px;max-height:400px;overflow:auto}
+    .daemon.running{border-color:var(--run)} .daemon.error{border-color:var(--err)} .daemon.stopped{border-color:var(--stop)}
+    .head{display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;padding-bottom:8px;border-bottom:1px solid var(--border)}
+    .title{font-weight:600;font-size:16px}
+    .status{display:flex;align-items:center;gap:6px;font-size:12px}
+    .dot{width:8px;height:8px;border-radius:50%}
+    .dot.running{background:var(--run)} .dot.error{background:var(--err)} .dot.stopped{background:var(--stop)}
+    .mono{font-family:ui-monospace,Menlo,Monaco,Consolas,monospace}
+    .logs{font-size:11px;background:#0a0a0a;border-radius:6px;padding:8px;max-height:180px;overflow:auto;white-space:pre-wrap;color:var(--muted)}
+    .row{display:flex;justify-content:space-between;gap:12px;padding:2px 0}
+    .label{color:var(--muted)}
+    .val{font-weight:600}
+    .ago{color:#666;font-size:.75rem;margin-left:8px;font-style:italic}
+    .bar{height:6px;background:#333;border-radius:3px;overflow:hidden;margin:4px 0}
+    .bar>.fill{height:100%;background:var(--run);transition:width .1s ease-out}
+    .cam{width:100%;height:300px;min-height:300px;border-radius:6px;background:#0a0a0a;margin:8px 0;object-fit:cover;object-position:center}
+    .trans{background:#0a0a0a;border-radius:6px;padding:8px;margin:8px 0;min-height:40px}
+    .pcv{width:100%;height:400px;min-height:400px;max-height:400px;border-radius:6px;background:#0a0a0a;margin:8px 0;position:relative;overflow:hidden;display:flex;align-items:center;justify-content:center;cursor:grab}
+    .panel-btn{padding:8px 16px;border-radius:8px;border:none;background:#333;color:#fff;cursor:pointer;font-size:14px;font-weight:500;transition:background .2s}
+    .panel-btn:hover{background:#444}
+    .toggle{display:flex;align-items:center;gap:6px;padding:8px 12px;border-radius:8px;background:#333;color:#fff;font-size:14px;font-weight:500}
+    .toggle.on{background:var(--run)}
+    .metadata{font-size:10px;color:var(--muted);margin-top:8px;padding-top:8px;border-top:1px solid var(--border)}
+    .metadata-row{display:flex;justify-content:space-between;padding:1px 0}
+    .waveform-canvas{width:100%;height:80px;border-radius:6px;background:#000;margin:4px 0}
+  </style>
+</head>
+<body>
+<div id="root"></div>
+
+<!-- React + ReactDOM UMD -->
+<script src="https://unpkg.com/react@18/umd/react.development.js" crossorigin></script>
+<script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js" crossorigin></script>
+
+<!-- React Flow UMD -->
+<script src="https://cdn.jsdelivr.net/npm/reactflow@11/dist/umd/index.min.js"></script>
+
+<!-- Three as module, then expose to window for ease of use inside components -->
+<script type="importmap">
+{ "imports": { "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js" } }
+</script>
+<script type="module">
+  import * as THREE from 'three';
+  window.THREE = THREE;
+  window.dispatchEvent(new Event('threejs-ready'));
+</script>
+
+<script>
+(function(){
+  const { useEffect, useMemo, useRef, useState, useCallback, createElement: h } = React;
+  const { createRoot } = ReactDOM;
+  const RF = window.ReactFlow || {};
+  const ReactFlow = RF.ReactFlow || ((p)=>h('div',{style:{padding:12,color:'crimson'}},'React Flow failed to load'));
+  const { MiniMap=()=>null, Controls=()=>null, Background=()=>null, Panel=()=>null, applyNodeChanges=RF.applyNodeChanges } = RF;
+
+  /* ------------------------------ WebSocket Manager ------------------------------ */
+  class WSManager {
+    constructor(onData) {
+      this.connections = new Map();
+      this.onData = onData;
+      this.audioBuffers = new Map();
+      this.transcriptionBuffers = new Map();
+    }
+
+    connect(writer) {
+      if (this.connections.has(writer)) return;
+      
+      const ws = new WebSocket(`ws://${window.location.host}/ws/writer/${writer}`);
+      
+      ws.onopen = () => {
+        console.log(`Connected to ${writer}`);
+      };
+      
+      ws.onmessage = (event) => {
+        const data = JSON.parse(event.data);
+        
+        // Debug logging for specific writers
+        if (writer === 'camera.jpeg' || writer === 'transcript' || writer === 'speakerphone.mic') {
+          console.log(`Data received for ${writer}:`, data.data ? Object.keys(data.data) : 'no data');
+          if (writer === 'speakerphone.mic' && data.data?.audio) {
+            console.log(`Audio data shape: ${data.data.audio.length} samples`);
+          }
+        }
+        
+        // Handle audio buffering
+        if (writer === 'speakerphone.mic' && data.data?.audio) {
+          if (!this.audioBuffers.has(writer)) {
+            this.audioBuffers.set(writer, []);
+          }
+          const buffer = this.audioBuffers.get(writer);
+          
+          // Debug: Check audio data format
+          if (buffer.length === 0) {
+            console.log('Mic audio data shape:', data.data.audio.length, 
+                       'First few samples:', data.data.audio.slice(0, 5));
+            if (Array.isArray(data.data.audio[0])) {
+              console.log('Mic audio is 2D array, shape:', data.data.audio.length, 'x', data.data.audio[0].length);
+            }
+          }
+          
+          buffer.push(data.data.audio);
+          // Keep last 5 seconds (50 chunks at 100ms each)
+          if (buffer.length > 50) buffer.shift();
+        }
+        
+        // Handle speaker audio buffering
+        if (writer === 'speakerphone.speaker' && data.data?.audio) {
+          if (!this.audioBuffers.has(writer)) {
+            this.audioBuffers.set(writer, []);
+          }
+          const buffer = this.audioBuffers.get(writer);
+          
+          // Debug: Check audio data format
+          if (buffer.length === 0) {
+            console.log('Speaker audio data shape:', data.data.audio.length, 
+                       'First few samples:', data.data.audio.slice(0, 5));
+            if (Array.isArray(data.data.audio[0])) {
+              console.log('Speaker audio is 2D array, shape:', data.data.audio.length, 'x', data.data.audio[0].length);
+            }
+          }
+          
+          buffer.push(data.data.audio);
+          // Keep last 5 seconds (50 chunks at 100ms each)
+          if (buffer.length > 50) buffer.shift();
+        }
+        
+        // Handle transcription buffering
+        if (writer === 'transcript' && data.data?.text) {
+          const text = data.data.text.trim();
+          if (text && text !== '') {
+            if (!this.transcriptionBuffers.has(writer)) {
+              this.transcriptionBuffers.set(writer, []);
+            }
+            const buffer = this.transcriptionBuffers.get(writer);
+            buffer.push({
+              text: text,
+              timestamp: data.data.timestamp || data.timestamp || new Date().toISOString()
+            });
+            // Keep last 10 transcriptions
+            if (buffer.length > 10) buffer.shift();
+          }
+        }
+        
+        this.onData(writer, data.data);
+      };
+      
+      ws.onerror = (error) => {
+        console.error(`Error on ${writer}:`, error);
+      };
+      
+      ws.onclose = () => {
+        console.log(`Disconnected from ${writer}`);
+        this.connections.delete(writer);
+        // Reconnect after 1 second
+        setTimeout(() => this.connect(writer), 1000);
+      };
+      
+      this.connections.set(writer, ws);
+    }
+
+    disconnect(writer) {
+      const ws = this.connections.get(writer);
+      if (ws) {
+        ws.close();
+        this.connections.delete(writer);
+      }
+    }
+
+    getAudioBuffer(writer) {
+      return this.audioBuffers.get(writer) || [];
+    }
+
+    getTranscriptionHistory(writer) {
+      return this.transcriptionBuffers.get(writer) || [];
+    }
+  }
+
+  /* ------------------------------ utils ------------------------------ */
+  const clamp = (v,min,max)=>Math.max(min,Math.min(max,v));
+  const fmtAgo = (ts)=>{
+    if(!ts) return '';
+    const d = new Date(ts); const diff = Date.now()-d.getTime();
+    if(diff<1000) return 'just now';
+    if(diff<60_000) return Math.floor(diff/1000)+'s ago';
+    return Math.floor(diff/60_000)+'m ago';
+  };
+  
+  const fmtTimestamp = (ts) => {
+    if (!ts) return '';
+    const d = new Date(ts);
+    const hours = d.getHours().toString().padStart(2, '0');
+    const minutes = d.getMinutes().toString().padStart(2, '0');
+    const seconds = d.getSeconds().toString().padStart(2, '0');
+    const millis = d.getMilliseconds().toString().padStart(3, '0');
+    return `${hours}:${minutes}:${seconds}.${millis}`;
+  };
+
+  const statusClass = s => (s==='running'||s==='error') ? s : 'stopped';
+
+  /* ------------------------------ small UI bits ------------------------------ */
+  const DataRow = ({label, value, extra}) =>
+    h('div',{className:'row'},
+      h('span',{className:'label'},label),
+      h('span',{className:'val mono'}, value),
+      extra ? h('span',{className:'ago'},extra) : null
+    );
+
+  /* ------------------------------ Audio Waveform ------------------------------ */
+  function AudioWaveform({ audioBuffer }) {
+    const canvasRef = useRef(null);
+    const animationRef = useRef(null);
+    
+    useEffect(() => {
+      if (!canvasRef.current) return;
+      
+      const canvas = canvasRef.current;
+      const ctx = canvas.getContext('2d');
+      const { width, height } = canvas;
+      
+      const draw = () => {
+        // Clear canvas
+        ctx.fillStyle = '#000';
+        ctx.fillRect(0, 0, width, height);
+        
+        if (!audioBuffer || audioBuffer.length === 0) {
+          // Draw center line when no data
+          ctx.strokeStyle = '#333';
+          ctx.beginPath();
+          ctx.moveTo(0, height / 2);
+          ctx.lineTo(width, height / 2);
+          ctx.stroke();
+          return;
+        }
+        
+        // Combine last few chunks for real-time display (show last 1 second)
+        const recentChunks = audioBuffer.slice(-10); // Last 10 chunks = 1 second
+        const allSamples = [];
+        
+        recentChunks.forEach(chunk => {
+          if (chunk && chunk.length > 0) {
+            // Flatten the audio data (it comes as shape (1600,1) so we need the first column)
+            const samples = Array.isArray(chunk[0]) ? chunk.map(s => s[0] || s) : chunk;
+            allSamples.push(...samples);
+          }
+        });
+        
+        if (allSamples.length === 0) return;
+        
+        // Downsample to fit canvas width
+        const samplesPerPixel = Math.max(1, Math.floor(allSamples.length / width));
+        
+        // Find global min/max for better scaling
+        let globalMin = 32767;
+        let globalMax = -32768;
+        for (let i = 0; i < allSamples.length; i++) {
+          const sample = allSamples[i];
+          if (sample < globalMin) globalMin = sample;
+          if (sample > globalMax) globalMax = sample;
+        }
+        
+        // Calculate scale factor (with some headroom)
+        const range = Math.max(Math.abs(globalMin), Math.abs(globalMax));
+        const scaleFactor = range > 0 ? (height * 0.4) / range : 1;
+        
+        // Draw waveform
+        ctx.strokeStyle = '#10b981';
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        
+        for (let x = 0; x < width; x++) {
+          const startIdx = x * samplesPerPixel;
+          const endIdx = Math.min(startIdx + samplesPerPixel, allSamples.length);
+          
+          // Find min and max in this pixel's samples
+          let min = 32767;
+          let max = -32768;
+          
+          for (let i = startIdx; i < endIdx; i++) {
+            const sample = allSamples[i];
+            if (sample < min) min = sample;
+            if (sample > max) max = sample;
+          }
+          
+          // Scale and center the waveform
+          const yMin = (height / 2) - (min * scaleFactor);
+          const yMax = (height / 2) - (max * scaleFactor);
+          
+          if (x === 0) {
+            ctx.moveTo(x, (yMin + yMax) / 2);
+          }
+          
+          // Draw vertical line from min to max
+          ctx.lineTo(x, yMax);
+          ctx.lineTo(x, yMin);
+        }
+        
+        ctx.stroke();
+        
+        // Draw center line
+        ctx.strokeStyle = '#333';
+        ctx.beginPath();
+        ctx.moveTo(0, height / 2);
+        ctx.lineTo(width, height / 2);
+        ctx.stroke();
+        
+        // Draw amplitude indicator
+        const rms = Math.sqrt(allSamples.reduce((sum, s) => sum + s * s, 0) / allSamples.length);
+        const amplitude = (rms / 32768) * 100;
+        
+        ctx.fillStyle = '#10b981';
+        ctx.font = '10px monospace';
+        ctx.fillText(`Level: ${amplitude.toFixed(1)}%`, 5, 15);
+      };
+      
+      // Animation loop for real-time updates
+      const animate = () => {
+        draw();
+        animationRef.current = requestAnimationFrame(animate);
+      };
+      
+      animate();
+      
+      return () => {
+        if (animationRef.current) {
+          cancelAnimationFrame(animationRef.current);
+        }
+      };
+    }, [audioBuffer]);
+    
+    return h('canvas', {
+      ref: canvasRef,
+      className: 'waveform-canvas',
+      width: 540,
+      height: 80
+    });
+  }
+
+  /* ------------------------------ Transcription History ------------------------------ */
+  function TranscriptionHistory({ transcriptions }) {
+    if (!transcriptions || transcriptions.length === 0) {
+      return h('div', { className: 'trans mono', style: { fontSize: '12px', color: '#666' } }, 'No transcriptions yet...');
+    }
+    
+    return h('div', { style: { maxHeight: '200px', overflowY: 'auto' } },
+      transcriptions.slice().reverse().map((item, idx) => 
+        h('div', { 
+          key: idx, 
+          className: 'trans mono',
+          style: { 
+            marginBottom: '8px',
+            padding: '8px',
+            fontSize: '12px',
+            borderLeft: idx === 0 ? '3px solid #10b981' : '3px solid #333'
+          }
+        },
+          h('div', { style: { marginBottom: '4px' } }, item.text),
+          h('div', { style: { fontSize: '10px', color: '#666' } }, fmtTimestamp(item.timestamp))
+        )
+      )
+    );
+  }
+
+  /* ------------------------------ camera ------------------------------ */
+  function CameraPreview({ data }){
+    // Use MJPEG stream directly
+    const streamUrl = '/mjpeg/camera';
+    
+    return h(React.Fragment,null,
+      h('img',{className:'cam', src:streamUrl}),
+      data?.bytesused && h(DataRow,{label:'Size:', value:(data.bytesused/1024).toFixed(1)+' KB'})
+    );
+  }
+
+  /* ------------------------------ point cloud ------------------------------ */
+  function PointCloudViewer({ data }){
+    const mountRef = useRef(null);
+    const sceneRef = useRef(null), rendererRef = useRef(null), cameraRef = useRef(null), rafRef = useRef(0);
+    const ctl = useRef({down:false,x:0,y:0});
+
+    // init
+    useEffect(()=>{
+      if(!mountRef.current || !window.THREE) return;
+      const el = mountRef.current, W = el.clientWidth, H = el.clientHeight;
+
+      const scene = new THREE.Scene();
+      scene.background = new THREE.Color(0x0a0a0a);
+      sceneRef.current = scene;
+
+      const camera = new THREE.PerspectiveCamera(75, W/H, 0.01, 100);
+      camera.position.set(0,0.5,3); camera.lookAt(0,0,0);
+      cameraRef.current = camera;
+
+      const renderer = new THREE.WebGLRenderer({antialias:true});
+      renderer.setSize(W,H); renderer.setPixelRatio(window.devicePixelRatio);
+      el.appendChild(renderer.domElement);
+      rendererRef.current = renderer;
+
+      scene.add(new THREE.AmbientLight(0xffffff,0.6));
+      const dir = new THREE.DirectionalLight(0xffffff,0.4); dir.position.set(5,5,5); scene.add(dir);
+      scene.add(new THREE.GridHelper(10,10,0x444444,0x222222));
+      scene.add(new THREE.AxesHelper(1));
+
+      const onMove = (e)=>{
+        if(!ctl.current.down) return;
+        const rect = el.getBoundingClientRect();
+        const nx = (e.clientX-rect.left)/W*2-1;
+        const ny = -(e.clientY-rect.top)/H*2+1;
+        const dx = nx-ctl.current.x, dy = ny-ctl.current.y;
+        const sph = new THREE.Spherical(); sph.setFromVector3(camera.position);
+        sph.theta -= dx*2; sph.phi = clamp(sph.phi+dy*2, 0.1, Math.PI-0.1);
+        camera.position.setFromSpherical(sph); camera.lookAt(0,0,0);
+        ctl.current.x=nx; ctl.current.y=ny;
+      };
+      const onDown=(e)=>{ ctl.current.down=true;
+        const rect=el.getBoundingClientRect();
+        ctl.current.x=(e.clientX-rect.left)/W*2-1; ctl.current.y=-(e.clientY-rect.top)/H*2+1; };
+      const onUp=()=>{ ctl.current.down=false; };
+      const onWheel=(e)=>{ e.preventDefault(); camera.position.multiplyScalar(e.deltaY>0?1.1:0.9); camera.lookAt(0,0,0); };
+
+      const onResize=()=>{
+        const w=el.clientWidth, h=el.clientHeight;
+        camera.aspect = w/h; camera.updateProjectionMatrix();
+        renderer.setSize(w,h);
+      };
+
+      el.addEventListener('mousemove',onMove); el.addEventListener('mousedown',onDown);
+      el.addEventListener('mouseup',onUp); el.addEventListener('mouseleave',onUp);
+      el.addEventListener('wheel',onWheel,{passive:false}); window.addEventListener('resize',onResize);
+
+      const tick=()=>{ rafRef.current = requestAnimationFrame(tick); renderer.render(scene,camera); }; tick();
+
+      return ()=>{
+        cancelAnimationFrame(rafRef.current);
+        window.removeEventListener('resize',onResize);
+        el.removeEventListener('mousemove',onMove); el.removeEventListener('mousedown',onDown);
+        el.removeEventListener('mouseup',onUp); el.removeEventListener('mouseleave',onUp);
+        el.removeEventListener('wheel',onWheel);
+        if(renderer) { el.removeChild(renderer.domElement); renderer.dispose(); }
+      };
+    },[]);
+
+    // update cloud
+    useEffect(()=>{
+      if(!sceneRef.current || !data) return;
+      const scene = sceneRef.current;
+      const old = scene.getObjectByName('pointCloud');
+      if(old){ scene.remove(old); old.geometry?.dispose(); old.material?.dispose(); }
+
+      const raw = data.points;
+      if(!raw || raw.length===0 || data.num_points === 0) return;
+
+      const numPoints = Math.min(data.num_points, raw.length);
+      const positions = new Float32Array(numPoints*3);
+      const colors = new Float32Array(numPoints*3);
+      const tmp = new THREE.Color();
+
+      for(let i=0;i<numPoints;i++){
+        const p = raw[i]; 
+        positions[i*3]=p[0]; positions[i*3+1]=p[1]; positions[i*3+2]=p[2];
+        
+        if(data.colors && data.colors[i]){
+          colors[i*3]=data.colors[i][0]/255; 
+          colors[i*3+1]=data.colors[i][1]/255; 
+          colors[i*3+2]=data.colors[i][2]/255;
+        }else{
+          const depth = p[2]; 
+          tmp.setHSL(0.6 - depth*0.1, 1, 0.5);
+          colors[i*3]=tmp.r; colors[i*3+1]=tmp.g; colors[i*3+2]=tmp.b;
+        }
+      }
+
+      const geo = new THREE.BufferGeometry();
+      geo.setAttribute('position', new THREE.Float32BufferAttribute(positions,3));
+      geo.setAttribute('color', new THREE.Float32BufferAttribute(colors,3));
+      const mat = new THREE.PointsMaterial({ size:0.02, vertexColors:true, sizeAttenuation:true });
+      const points = new THREE.Points(geo,mat); points.name='pointCloud';
+      scene.add(points);
+    },[data]);
+
+    return h('div',{ref:mountRef,className:'pcv'});
+  }
+
+  /* ------------------------------ node body ------------------------------ */
+  function renderBody(id, data, wsManager){
+    const d = data || {};
+    switch(id){
+      case 'camera':
+        return h(CameraPreview,{data:d});
+      case 'drive':
+        return h(React.Fragment,null,
+          d.vel && h(DataRow, {label:'Velocity:', value: d.vel.map(v=>v.toFixed(2)).join(', '), extra:fmtAgo(d.timestamp)}),
+          d.pos && h(DataRow, {label:'Position:', value: d.pos.map(p=>p.toFixed(2)).join(', ')}),
+          d.voltage && h(DataRow, {label:'Voltage:', value: d.voltage.toFixed(1)+' V'})
+        );
+      case 'led_strip':
+        return h(React.Fragment,null,
+          h('div',{className:'row'}, h('span',{className:'label'},'LED Strip:')),
+          h('div',{style:{display:'flex', gap:'2px', padding:'4px 0'}},
+            Array.isArray(d.rgb) ? d.rgb.map((led, i) => 
+              h('div',{
+                key:i,
+                style:{
+                  width:'20px',
+                  height:'20px',
+                  backgroundColor: `rgb(${led[0]}, ${led[1]}, ${led[2]})`,
+                  borderRadius:'2px',
+                  border:'1px solid #333'
+                }
+              })
+            ) : h('span',{style:{color:'#666'}},'No data')
+          )
+        );
+      case 'speakerphone':
+        const micBuffer = wsManager ? wsManager.getAudioBuffer('speakerphone.mic') : [];
+        const speakerBuffer = wsManager ? wsManager.getAudioBuffer('speakerphone.speaker') : [];
+        return h(React.Fragment,null,
+          h('div',{className:'row'}, h('span',{className:'label'},'Microphone Input:')),
+          h(AudioWaveform, { audioBuffer: micBuffer }),
+          h('div',{className:'row', style:{fontSize:'10px', color:'#666', marginBottom:'8px'}}, 
+            h('span',null,`Mic buffer: ${micBuffer.length} chunks`)),
+          
+          h('div',{className:'row'}, h('span',{className:'label'},'Speaker Output:')),
+          h(AudioWaveform, { audioBuffer: speakerBuffer }),
+          h('div',{className:'row', style:{fontSize:'10px', color:'#666'}}, 
+            h('span',null,`Speaker buffer: ${speakerBuffer.length} chunks`))
+        );
+      case 'transcriber':
+        const transcriptionHistory = wsManager ? wsManager.getTranscriptionHistory('transcript') : [];
+        return h(React.Fragment,null,
+          h('div',{className:'row'}, h('span',{className:'label'},'Transcription History:')),
+          h(TranscriptionHistory, { transcriptions: transcriptionHistory })
+        );
+      case 'depth':
+        return h(React.Fragment,null,
+          d.num_points!=null && h(DataRow,{label:'Points:', value: d.num_points }),
+          h(PointCloudViewer,{data:d})
+        );
+      case 'system':
+        return h(React.Fragment,null,
+          d.cpu && h(DataRow,{label:'CPU:', value: d.cpu.percent?.toFixed(1) + '%'}),
+          d.memory && h(DataRow,{label:'Memory:', value: (d.memory.percent?.toFixed(1) || 0) + '%'}),
+          d.load_avg && h(DataRow,{label:'Load:', value: d.load_avg.map(l => l.toFixed(2)).join(' ')}),
+          d.top_processes && h('div',{style:{marginTop:'8px'}},
+            h('div',{className:'label'},'Top Processes:'),
+            d.top_processes.slice(0,3).map((p,i) => 
+              h('div',{key:i,className:'mono',style:{fontSize:'11px',padding:'2px 0'}},
+                `${p.name.substring(0,20).padEnd(20)} ${p.cpu.toFixed(1)}%`
+              )
+            )
+          )
+        );
+      default:
+        return h('div',{className:'row'}, h('span',{className:'label'},'No specific data'));
+    }
+  }
+
+  /* ------------------------------ node component ------------------------------ */
+  function DaemonNode({ data }){
+    const { name, status, logs, payload, writerInfo, wsManager } = data;
+    const s = statusClass(status);
+    const last5 = (logs||[]).slice(-5).join('');
+    return h('div',{className:`daemon ${s}`},
+      h('div',{className:'head'},
+        h('div',{className:'title'}, name),
+        h('div',{className:'status'},
+          h('div',{className:`dot ${s}`}),
+          h('span',null,s)
+        )
+      ),
+      h('div',null, renderBody(name, payload, wsManager)),
+      writerInfo && h('div',{className:'metadata'},
+        h('div',{className:'metadata-row'},
+          h('span',null,'Latency:'),
+          h('span',{className:'mono'},writerInfo.latency+'ms')
+        ),
+        h('div',{className:'metadata-row'},
+          h('span',null,'Owner:'),
+          h('span',{className:'mono'},writerInfo.owner)
+        )
+      ),
+      last5 && h('div',{className:'logs mono'}, last5)
+    );
+  }
+
+  const nodeTypes = { daemon: DaemonNode };
+
+  /* ------------------------------ layout ------------------------------ */
+  function computeLayout(nodes){
+    const positions = {
+      'camera': {x:100,y:50},
+      'drive': {x:450,y:50},
+      'led_strip': {x:800,y:50},
+      'speakerphone': {x:100,y:350},
+      'transcriber': {x:450,y:350},
+      'depth': {x:800,y:350},
+    };
+    
+    return nodes.map(n => ({
+      ...n,
+      position: positions[n.id] || {x:100,y:100}
+    }));
+  }
+
+  /* ------------------------------ app ------------------------------ */
+  function App(){
+    const initialNodes = useMemo(()=>[
+      { id:'camera',       type:'daemon', data:{name:'camera',       status:'stopped', logs:[], payload:null}, position:{x:100,y:50}},
+      { id:'drive',        type:'daemon', data:{name:'drive',        status:'stopped', logs:[], payload:null}, position:{x:450,y:50}},
+      { id:'led_strip',    type:'daemon', data:{name:'led_strip',    status:'stopped', logs:[], payload:null}, position:{x:800,y:50}},
+      { id:'speakerphone', type:'daemon', data:{name:'speakerphone', status:'stopped', logs:[], payload:null}, position:{x:100,y:350}},
+      { id:'transcriber',  type:'daemon', data:{name:'transcriber',  status:'stopped', logs:[], payload:null}, position:{x:450,y:350}},
+      { id:'depth',        type:'daemon', data:{name:'depth',        status:'stopped', logs:[], payload:null}, position:{x:800,y:350}},
+      { id:'system',       type:'daemon', data:{name:'system',       status:'running', logs:[], payload:null}, position:{x:1150,y:200}},
+    ],[]);
+    const initialEdges = useMemo(()=>[
+      { id:'cam-depth',    source:'camera',      target:'depth',        animated:true },
+      { id:'mic-trans',    source:'speakerphone',target:'transcriber',  animated:true },
+    ],[]);
+
+    const [nodes, setNodes] = useState(initialNodes);
+    const [edges] = useState(initialEdges);
+    const [writers, setWriters] = useState({});
+    const wsManager = useRef(null);
+
+    // Initialize WebSocket manager
+    useEffect(() => {
+      const writerData = {};
+      
+      wsManager.current = new WSManager((writer, data) => {
+        writerData[writer] = data;
+        
+        // Map writer data to nodes
+        setNodes(prev => prev.map(n => {
+          let nodeData = null;
+          
+          // Map writers to nodes
+          if (n.id === 'camera' && writer === 'camera.jpeg') {
+            nodeData = data;
+          } else if (n.id === 'drive' && (writer === 'drive.state' || writer === 'drive.status')) {
+            nodeData = {...writerData['drive.state'], ...writerData['drive.status']};
+          } else if (n.id === 'led_strip' && writer === 'led_strip.ctrl') {
+            nodeData = data;
+          } else if (n.id === 'speakerphone' && (writer === 'speakerphone.mic' || writer === 'speakerphone.speaker')) {
+            nodeData = data;
+          } else if (n.id === 'transcriber' && writer === 'transcript') {
+            nodeData = data;
+          } else if (n.id === 'depth' && writer === 'camera.points') {
+            nodeData = data;
+          }
+          
+          if (nodeData) {
+            // Debug specific nodes
+            if (n.id === 'camera' || n.id === 'transcriber' || n.id === 'speakerphone') {
+              console.log(`Updating ${n.id} with data from ${writer}:`, nodeData);
+            }
+            return {
+              ...n,
+              data: {
+                ...n.data,
+                payload: nodeData,
+                wsManager: wsManager.current
+              }
+            };
+          }
+          return n;
+        }));
+      });
+      
+      return () => {
+        if (wsManager.current) {
+          Object.keys(writers).forEach(writer => {
+            wsManager.current.disconnect(writer);
+          });
+        }
+      };
+    }, []);
+
+    // Fetch writers and daemons
+    useEffect(() => {
+      // Get readers list first
+      fetch('/api/readers')
+        .then(res => res.json())
+        .then(readers => {
+          console.log('Configured readers:', readers);
+          // Connect to configured readers
+          readers.forEach(reader => {
+            wsManager.current.connect(reader);
+          });
+        })
+        .catch(err => console.error('Failed to fetch readers:', err));
+      
+      // Get writers for metadata
+      fetch('/api/writers')
+        .then(res => res.json())
+        .then(data => {
+          setWriters(data);
+          
+          // Update nodes with writer info
+          setNodes(prev => prev.map(n => {
+            let writerInfo = null;
+            Object.entries(data).forEach(([writerName, info]) => {
+              if (writerName.startsWith(n.id + '.') || 
+                  (n.id === 'transcriber' && writerName === 'transcript')) {
+                writerInfo = info;
+              }
+            });
+            
+            return {
+              ...n,
+              data: {
+                ...n.data,
+                writerInfo
+              }
+            };
+          }));
+        })
+        .catch(err => console.error('Failed to fetch writers:', err));
+        
+      // Get daemon status
+      const updateDaemons = () => {
+        fetch('/api/daemons')
+          .then(res => res.json())
+          .then(data => {
+            setNodes(prev => prev.map(n => ({
+              ...n,
+              data: {
+                ...n.data,
+                status: data[n.id]?.status || (n.id === 'system' ? 'running' : 'stopped')
+              }
+            })));
+          })
+          .catch(err => console.error('Failed to fetch daemons:', err));
+      };
+      
+      // Get system metrics
+      const updateSystem = () => {
+        fetch('/api/system')
+          .then(res => res.json())
+          .then(data => {
+            setNodes(prev => prev.map(n => {
+              if (n.id === 'system') {
+                return {
+                  ...n,
+                  data: {
+                    ...n.data,
+                    payload: data
+                  }
+                };
+              }
+              return n;
+            }));
+          })
+          .catch(err => console.error('Failed to fetch system:', err));
+      };
+      
+      updateDaemons();
+      updateSystem();
+      const daemonInterval = setInterval(updateDaemons, 2000);
+      const systemInterval = setInterval(updateSystem, 5000);
+      
+      return () => {
+        clearInterval(daemonInterval);
+        clearInterval(systemInterval);
+      };
+    }, []);
+
+    const onNodesChange = useCallback((changes)=>{
+      if(applyNodeChanges) setNodes(nds=>applyNodeChanges(changes, nds));
+    },[]);
+
+    return h('div',{style:{height:'100%'}},
+      h(ReactFlow,{
+        nodes, edges, nodeTypes,
+        onNodesChange,
+        fitView:true,
+        defaultViewport:{x:0,y:0,zoom:0.7}
+      },
+        h(Background,{variant:'dots', color:'#222'}),
+        h(Controls,null),
+        h(MiniMap,{
+          nodeColor:n=>{
+            const s = statusClass(n.data?.status);
+            return s==='running' ? '#10b981' : s==='error' ? '#ef4444' : '#6b7280';
+          }
+        }),
+        h(Panel,{position:'top-left'},
+          h('div',{style:{display:'flex',gap:8,alignItems:'center'}},
+            h('button',{className:'panel-btn', onClick:()=>{
+              const laid = computeLayout(nodes);
+              setNodes(laid);
+            }}, 'Auto Layout')
+          )
+        )
+      )
+    );
+  }
+
+  // Start app after THREE is ready (so the viewer mounts cleanly)
+  if(window.THREE) createRoot(document.getElementById('root')).render(React.createElement(App));
+  else window.addEventListener('threejs-ready', ()=>createRoot(document.getElementById('root')).render(React.createElement(App)));
+})();
+</script>
+</body>
+</html>
