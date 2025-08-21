@@ -81,6 +81,9 @@ def main():
                     if detect_wake_word(text, "quiet"):
                         stop_app("realtime")
                         color = [0, 0, 0]
+                    if detect_wake_word(text, "wave"):
+                        start_app("mimic")
+                        color = [255, 255, 0]
                     if detect_wake_word(text, "number"):
                         speak_hostname()
                         color = [0, 255, 255]  # Cyan color for number speaking
