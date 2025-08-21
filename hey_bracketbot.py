@@ -50,13 +50,11 @@ def speak_hostname():
         hostname = socket.gethostname()
         print(f"Speaking hostname: {hostname}", flush=True)
         
-        # Run kokoro TTS - it now checks cache first before importing heavy stuff
-        subprocess.run([
+        subprocess.Popen([
             "uv", "run",
             "/home/bracketbot/BracketBotApps/kokoro/main.py", 
             hostname
-        ], check=True, cwd="/home/bracketbot/BracketBotApps/kokoro")
-        
+        ], cwd="/home/bracketbot/BracketBotApps/kokoro")
         return True
     except Exception as e:
         print(f"Error speaking hostname: {e}", flush=True)

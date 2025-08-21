@@ -59,7 +59,7 @@ def play_cached_audio(cache_path):
     
     print(f"Playing audio ({total_samples} samples, {chunks_needed} chunks)...")
     
-    with Writer("audio.speaker", Type("speakerphone_speaker")) as w_speaker:
+    with Writer("speakerphone.speaker", Type("speakerphone_speaker")) as w_speaker:
         for i in range(chunks_needed):
             start_idx = i * chunk_size
             end_idx = min(start_idx + chunk_size, total_samples)
@@ -148,7 +148,7 @@ def generate_and_play_audio(text, voice='am_adam', cache_path=None):
     
     print(f"Playing audio ({total_samples} samples, {chunks_needed} chunks)...")
     
-    with Writer("audio.speaker", Type("speakerphone_speaker")) as w_speaker:
+    with Writer("speakerphone.speaker", Type("speakerphone_speaker")) as w_speaker:
         for i in range(chunks_needed):
             start_idx = i * chunk_size
             end_idx = min(start_idx + chunk_size, total_samples)
