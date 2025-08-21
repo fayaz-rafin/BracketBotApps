@@ -47,8 +47,7 @@ def main(record_fps=DEFAULT_RECORD_FPS):
         '-pix_fmt', 'yuv420p',    # required for QuickTime compatibility
         str(video_file)
     ], stdin=PIPE)
-    with Reader("camera.jpeg") as r_jpeg, \
-         Writer("led_strip.ctrl", Type('led_strip_ctrl')) as w_led:
+    with Reader("camera.jpeg") as r_jpeg:
         color = [0, 0, 0]
         now = time.time()
         current_time = time.time()
@@ -66,8 +65,6 @@ def main(record_fps=DEFAULT_RECORD_FPS):
                 color = [255, 0, 0]  # Set LED to red
             else:
                 color = [0, 0, 0]
-            with w_led.buf() as buf:
-                buf['rgb'][:] = color
             # Close ffmpeg stdin and wait for flush
     p.stdin.close()
     p.wait()

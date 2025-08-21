@@ -35,16 +35,15 @@ CFG_SPKPN = Config("speakerphone")
 AUDIO_BUFFER_MS = 5000  # 5 seconds of audio buffer
 
 # Readers based on actual writers
-# TODO: remove DAEMON_NAMES and READERS
 READERS = [
-    'camera.points',
     'camera.jpeg',
     'speakerphone.mic',
     'speakerphone.speaker',  # For speaker output visualization
     'led_strip.ctrl',
     'transcript',
     'drive.state',
-    'drive.status'
+    'drive.status',
+    'camera.points'  # Point cloud data
 ]
 
 # Daemon names for status checking
@@ -178,8 +177,26 @@ def convert_numpy_to_json(data, skip_jpeg=False):
             if field_name == 'jpeg' and skip_jpeg:
                 continue
             
+            # Skip large point cloud arrays to avoid JSON bloat
+            if field_name in ['points', 'colors'] and 'num_points' in data.dtype.names:
+                # Don't send the actual arrays for point clouds
+                continue
+            
             if isinstance(value, np.ndarray):
-                json_data[field_name] = value.tolist()
+                # For audio data, convert to int16 list (flatten if 2D)
+                if field_name == 'audio' and value.dtype == np.int16:
+                    if value.ndim == 2 and value.shape[1] == 1:
+                        # Flatten mono audio from (samples, 1) to (samples,)
+                        json_data[field_name] = value.flatten().tolist()
+                    else:
+                        json_data[field_name] = value.tolist()
+                # For other arrays, convert based on type
+                elif value.dtype in [np.float16, np.float32, np.float64]:
+                    json_data[field_name] = value.tolist()
+                elif value.dtype in [np.uint8, np.uint16, np.uint32]:
+                    json_data[field_name] = value.tolist()
+                else:
+                    json_data[field_name] = value.tolist()
             elif isinstance(value, (np.int32, np.int64, np.uint32, np.uint64)):
                 json_data[field_name] = int(value)
             elif isinstance(value, (np.float32, np.float64)):
@@ -230,6 +247,36 @@ async def get_daemons():
 async def get_system():
     """Get system metrics."""
     return get_system_metrics()
+
+@app.get("/api/pointcloud/status")
+async def get_pointcloud_status():
+    """Get current point cloud status."""
+    if 'camera.points' in queues:
+        try:
+            # Try to get the latest data without blocking
+            data = None
+            # Drain the queue and keep only the latest
+            while True:
+                try:
+                    data = queues['camera.points'].get_nowait()
+                except queue.Empty:
+                    break
+            
+            if data is not None:
+                # Put it back for the binary websocket
+                try:
+                    queues['camera.points'].put_nowait(data)
+                except queue.Full:
+                    pass
+                
+                return {
+                    'num_points': int(data['num_points']),
+                    'timestamp': str(data['timestamp']) if 'timestamp' in data.dtype.names else None
+                }
+        except Exception as e:
+            print(f"Error getting point cloud status: {e}")
+    
+    return {'num_points': 0}
 
 @app.get("/mjpeg/camera")
 async def mjpeg_stream():
@@ -292,18 +339,66 @@ async def writer_websocket(websocket: WebSocket, writer_name: str):
     except Exception as e:
         print(f"Error in WebSocket for {writer_name}: {e}")
 
+@app.websocket("/ws/binary/camera.points")
+async def points_binary_websocket(websocket: WebSocket):
+    """Binary WebSocket endpoint for point cloud data."""
+    print("Binary WebSocket connection attempt for camera.points")
+    await websocket.accept()
+    print("Binary WebSocket connection accepted for camera.points")
+    
+    try:
+        while True:
+            # Try to get data without blocking
+            data = None
+            try:
+                # Get latest data from main loop
+                if 'camera.points' in queues:
+                    data = queues['camera.points'].get_nowait()
+            except queue.Empty:
+                await asyncio.sleep(0.01)
+                continue
+            except Exception as e:
+                print(f"Error getting data from queue: {e}")
+                await asyncio.sleep(0.01)
+                continue
+                
+            if data is not None:
+                try:
+                    # Pack binary data efficiently
+                    num_points = int(data['num_points'])
+                    print(f"Binary WS: Sending {num_points} points")
+                    if num_points > 0 and num_points < 100000:  # Sanity check
+                        # Create a binary message with header + points + colors
+                        # Header: 4 bytes (num_points as int32)
+                        header = np.array([num_points],dtype=np.int32).tobytes()
+                        # Points: num_points * 3 * 2 bytes (float16)
+                        points_data = data['points'][:num_points].tobytes()
+                        # Colors: num_points * 3 * 1 byte (uint8)
+                        colors_data = data['colors'][:num_points].tobytes() if 'colors' in data.dtype.names else b''
+                        
+                        # Send as binary message
+                        await websocket.send_bytes(header + points_data + colors_data)
+                        print(f"Binary WS: Sent {len(header + points_data + colors_data)} bytes")
+                except Exception as e:
+                    print(f"Error sending binary data: {e}")
+                    
+    except WebSocketDisconnect:
+        print("Binary WebSocket disconnected")
+    except Exception as e:
+        print(f"Error in binary WebSocket for camera.points: {e}")
+
 def ui(port: int, q: Dict[str, queue.Queue]):
     """Run the FastAPI application in a separate thread."""
     global queues
     queues = q
-    uvicorn.run(app, host='0.0.0.0', port=port, log_level='info')
+    uvicorn.run(app, host='0.0.0.0', port=port)
 
 def main() -> None:
     """Entry point to run the Flow Dashboard server."""
     port = int(os.environ.get('FLOW_PORT', '8002'))
     
     # Create queues with appropriate sizes
-    queues = {r: queue.Queue(maxsize=3) for r in READERS}
+    queues = {r: queue.Queue(maxsize=10 if r == 'camera.points' else 3) for r in READERS}
     readers = {r: Reader(r) for r in READERS}
     
     # Start UI thread
@@ -323,14 +418,18 @@ def main() -> None:
                 for r in READERS:
                     if readers[r].ready():
                         try:
-                            queues[r].put_nowait(readers[r].data)
+                            data = readers[r].data
+                            if r == 'camera.points' and data is not None:
+                                print(f"Got camera.points data: num_points={data['num_points']}")
+                            # Put data in queue for all consumers
+                            queues[r].put_nowait(data)
                         except queue.Full:
                             # Drop oldest data
                             try:
                                 queues[r].get_nowait()
                             except queue.Empty:
                                 pass
-                            queues[r].put_nowait(readers[r].data)
+                            queues[r].put_nowait(data)
         except KeyboardInterrupt:
             print("\nShutting down...")
 

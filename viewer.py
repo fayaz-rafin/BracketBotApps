@@ -21,14 +21,14 @@ def main():
     rr.set_time("monotonic", timestamp=time.monotonic())
     with Reader("camera.jpeg") as r_jpeg,  \
          Reader("camera.points") as r_pts, \
-         Reader("audio.mic") as r_mic, \
+         Reader("speakerphone.mic") as r_mic, \
          Reader("drive.ctrl") as r_ctrl:
         while True:
             if r_jpeg.ready():
                 rr.set_time("monotonic", timestamp=r_jpeg.data['timestamp'])
                 rr.log("/camera", rr.EncodedImage(contents=r_jpeg.data['jpeg'],media_type="image/jpeg"))
             if r_pts.ready():
-                rr.log("/", rr.ViewCoordinates.RIGHT_HAND_Y_DOWN, static=True)
+                rr.log("/", rr.ViewCoordinates.RIGHT_HAND_Y_UP, static=True)
                 rr.set_time("monotonic", timestamp=r_pts.data['timestamp'])
                 rr.log("/camera.points", rr.Points3D(r_pts.data['points'][:r_pts.data['num_points']], 
                                               colors=r_pts.data['colors'][:r_pts.data['num_points']]))

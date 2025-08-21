@@ -201,7 +201,7 @@ if __name__ == "__main__":
     
     try:
         with Writer("led_strip.ctrl", Type("led_strip_ctrl")) as w_led, \
-             Writer("audio.speaker", Type("speakerphone_speaker")) as w_audio:
+             Writer("speakerphone.speaker", Type("speakerphone_speaker")) as w_audio:
             
             print("🔥 [Fireplace] Fire is burning! Press Ctrl+C to extinguish...")
             

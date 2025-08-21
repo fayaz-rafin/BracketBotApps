@@ -189,6 +189,85 @@
     }
   }
 
+  /* ------------------------------ Binary WebSocket for Point Clouds ------------------------------ */
+  class BinaryWSManager {
+    constructor(onPointCloud) {
+      this.ws = null;
+      this.onPointCloud = onPointCloud;
+      this.reconnectTimer = null;
+    }
+
+    connect() {
+      if (this.ws && this.ws.readyState === WebSocket.OPEN) return;
+      
+      const url = `ws://${window.location.host}/ws/binary/camera.points`;
+      console.log('Attempting to connect to binary WebSocket:', url);
+      
+      this.ws = new WebSocket(url);
+      this.ws.binaryType = 'arraybuffer';
+      
+      this.ws.onopen = () => {
+        console.log('Connected to binary point cloud stream');
+      };
+      
+      this.ws.onmessage = (event) => {
+        if (event.data instanceof ArrayBuffer) {
+          const buffer = event.data;
+          const view = new DataView(buffer);
+          
+          // Read header
+          const numPoints = view.getInt32(0, true); // little-endian
+          
+          if (numPoints > 0 && numPoints < 100000) { // sanity check
+            const pointsOffset = 4;
+            const pointsSize = numPoints * 3 * 2; // float16 = 2 bytes
+            const colorsOffset = pointsOffset + pointsSize;
+            
+            // Read float16 data and convert to float32
+            const float16Positions = new Uint16Array(buffer, pointsOffset, numPoints * 3);
+            const positions = new Float32Array(numPoints * 3);
+            
+            // Convert float16 to float32
+            for (let i = 0; i < numPoints * 3; i++) {
+              positions[i] = float16ToFloat32(float16Positions[i]);
+            }
+            
+            const colors = buffer.byteLength > colorsOffset ? 
+              new Uint8Array(buffer, colorsOffset, numPoints * 3) : null;
+            
+            this.onPointCloud({
+              numPoints,
+              positions,
+              colors
+            });
+          }
+        }
+      };
+      
+      this.ws.onerror = (error) => {
+        console.error('Binary WebSocket error:', error);
+      };
+      
+      this.ws.onclose = () => {
+        console.log('Binary WebSocket closed');
+        // Reconnect after 1 second
+        if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
+        this.reconnectTimer = setTimeout(() => this.connect(), 1000);
+      };
+    }
+
+    disconnect() {
+      if (this.reconnectTimer) {
+        clearTimeout(this.reconnectTimer);
+        this.reconnectTimer = null;
+      }
+      if (this.ws) {
+        this.ws.close();
+        this.ws = null;
+      }
+    }
+  }
+
   /* ------------------------------ utils ------------------------------ */
   const clamp = (v,min,max)=>Math.max(min,Math.min(max,v));
   const fmtAgo = (ts)=>{
@@ -207,6 +286,21 @@
     const seconds = d.getSeconds().toString().padStart(2, '0');
     const millis = d.getMilliseconds().toString().padStart(3, '0');
     return `${hours}:${minutes}:${seconds}.${millis}`;
+  };
+  
+  // Convert float16 to float32
+  const float16ToFloat32 = (h) => {
+    const s = (h & 0x8000) >> 15;
+    const e = (h & 0x7C00) >> 10;
+    const f = h & 0x03FF;
+
+    if(e === 0) {
+      return (s ? -1 : 1) * Math.pow(2, -14) * (f / Math.pow(2, 10));
+    } else if (e === 0x1F) {
+      return f ? NaN : ((s ? -1 : 1) * Infinity);
+    }
+
+    return (s ? -1 : 1) * Math.pow(2, e - 15) * (1 + (f / Math.pow(2, 10)));
   };
 
   const statusClass = s => (s==='running'||s==='error') ? s : 'stopped';
@@ -389,12 +483,21 @@
   function PointCloudViewer({ data }){
     const mountRef = useRef(null);
     const sceneRef = useRef(null), rendererRef = useRef(null), cameraRef = useRef(null), rafRef = useRef(0);
+    const geometryRef = useRef(null);
+    const materialRef = useRef(null);
+    const pointsRef = useRef(null);
     const ctl = useRef({down:false,x:0,y:0});
+    const binaryWS = useRef(null);
 
-    // init
+    // init scene
     useEffect(()=>{
-      if(!mountRef.current || !window.THREE) return;
+      console.log('PointCloudViewer mounting, THREE available:', !!window.THREE);
+      if(!mountRef.current || !window.THREE) {
+        console.log('Waiting for mount or THREE.js');
+        return;
+      }
       const el = mountRef.current, W = el.clientWidth, H = el.clientHeight;
+      console.log(`Creating scene, canvas size: ${W}x${H}`);
 
       const scene = new THREE.Scene();
       scene.background = new THREE.Color(0x0a0a0a);
@@ -413,6 +516,21 @@
       const dir = new THREE.DirectionalLight(0xffffff,0.4); dir.position.set(5,5,5); scene.add(dir);
       scene.add(new THREE.GridHelper(10,10,0x444444,0x222222));
       scene.add(new THREE.AxesHelper(1));
+
+      // Pre-create geometry and material
+      const geometry = new THREE.BufferGeometry();
+      const material = new THREE.PointsMaterial({ 
+        size: 0.01, 
+        vertexColors: true, 
+        sizeAttenuation: true 
+      });
+      const points = new THREE.Points(geometry, material);
+      points.name = 'pointCloud';
+      scene.add(points);
+      
+      geometryRef.current = geometry;
+      materialRef.current = material;
+      pointsRef.current = points;
 
       const onMove = (e)=>{
         if(!ctl.current.down) return;
@@ -453,43 +571,46 @@
       };
     },[]);
 
-    // update cloud
-    useEffect(()=>{
-      if(!sceneRef.current || !data) return;
-      const scene = sceneRef.current;
-      const old = scene.getObjectByName('pointCloud');
-      if(old){ scene.remove(old); old.geometry?.dispose(); old.material?.dispose(); }
-
-      const raw = data.points;
-      if(!raw || raw.length===0 || data.num_points === 0) return;
-
-      const numPoints = Math.min(data.num_points, raw.length);
-      const positions = new Float32Array(numPoints*3);
-      const colors = new Float32Array(numPoints*3);
-      const tmp = new THREE.Color();
-
-      for(let i=0;i<numPoints;i++){
-        const p = raw[i]; 
-        positions[i*3]=p[0]; positions[i*3+1]=p[1]; positions[i*3+2]=p[2];
+    // Connect to binary WebSocket for real point cloud data
+    useEffect(() => {
+      if (!geometryRef.current) return;
+      
+      console.log('Connecting to binary point cloud WebSocket');
+      binaryWS.current = new BinaryWSManager((pointData) => {
+        console.log('Received point cloud data:', pointData.numPoints, 'points');
+        if (!geometryRef.current) return;
         
-        if(data.colors && data.colors[i]){
-          colors[i*3]=data.colors[i][0]/255; 
-          colors[i*3+1]=data.colors[i][1]/255; 
-          colors[i*3+2]=data.colors[i][2]/255;
-        }else{
-          const depth = p[2]; 
-          tmp.setHSL(0.6 - depth*0.1, 1, 0.5);
-          colors[i*3]=tmp.r; colors[i*3+1]=tmp.g; colors[i*3+2]=tmp.b;
+        const geometry = geometryRef.current;
+        
+        // Update geometry with real data
+        geometry.setAttribute('position', new THREE.BufferAttribute(pointData.positions, 3));
+        
+        if (pointData.colors) {
+          // Convert uint8 colors to float32 for Three.js
+          const floatColors = new Float32Array(pointData.numPoints * 3);
+          for (let i = 0; i < pointData.numPoints * 3; i++) {
+            floatColors[i] = pointData.colors[i] / 255.0;
+          }
+          geometry.setAttribute('color', new THREE.BufferAttribute(floatColors, 3));
         }
-      }
-
-      const geo = new THREE.BufferGeometry();
-      geo.setAttribute('position', new THREE.Float32BufferAttribute(positions,3));
-      geo.setAttribute('color', new THREE.Float32BufferAttribute(colors,3));
-      const mat = new THREE.PointsMaterial({ size:0.02, vertexColors:true, sizeAttenuation:true });
-      const points = new THREE.Points(geo,mat); points.name='pointCloud';
-      scene.add(points);
-    },[data]);
+        
+        geometry.attributes.position.needsUpdate = true;
+        if (geometry.attributes.color) {
+          geometry.attributes.color.needsUpdate = true;
+        }
+        
+        // Compute bounding sphere for proper culling and camera fitting
+        geometry.computeBoundingSphere();
+      });
+      
+      binaryWS.current.connect();
+      
+      return () => {
+        if (binaryWS.current) {
+          binaryWS.current.disconnect();
+        }
+      };
+    }, []);
 
     return h('div',{ref:mountRef,className:'pcv'});
   }
@@ -696,9 +817,11 @@
         .then(res => res.json())
         .then(readers => {
           console.log('Configured readers:', readers);
-          // Connect to configured readers
+          // Connect to configured readers (except camera.points which only sends metadata)
           readers.forEach(reader => {
-            wsManager.current.connect(reader);
+            if (reader !== 'camera.points') {
+              wsManager.current.connect(reader);
+            }
           });
         })
         .catch(err => console.error('Failed to fetch readers:', err));
@@ -767,14 +890,38 @@
           .catch(err => console.error('Failed to fetch system:', err));
       };
       
+      // Get point cloud status
+      const updatePointCloud = () => {
+        fetch('/api/pointcloud/status')
+          .then(res => res.json())
+          .then(data => {
+            setNodes(prev => prev.map(n => {
+              if (n.id === 'depth') {
+                return {
+                  ...n,
+                  data: {
+                    ...n.data,
+                    payload: data
+                  }
+                };
+              }
+              return n;
+            }));
+          })
+          .catch(err => console.error('Failed to fetch point cloud status:', err));
+      };
+      
       updateDaemons();
       updateSystem();
+      updatePointCloud();
       const daemonInterval = setInterval(updateDaemons, 2000);
       const systemInterval = setInterval(updateSystem, 5000);
+      const pointCloudInterval = setInterval(updatePointCloud, 1000); // Update every second
       
       return () => {
         clearInterval(daemonInterval);
         clearInterval(systemInterval);
+        clearInterval(pointCloudInterval);
       };
     }, []);
 
