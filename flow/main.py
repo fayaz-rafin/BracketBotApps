@@ -97,7 +97,7 @@ def get_writer_metadata() -> Dict[str, Any]:
                         'name': w,
                         'caller': info.get('caller', 'Unknown'),
                         'owner': info.get('owner', 'Unknown'),
-                        'latency': info.get('latency', 0),
+                        'period': info.get('period', 0),
                         'dtype': info.get('dtype', [])
                     }
                 except:

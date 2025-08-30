@@ -705,8 +705,8 @@
       h('div',null, renderBody(name, payload, wsManager)),
       writerInfo && h('div',{className:'metadata'},
         h('div',{className:'metadata-row'},
-          h('span',null,'Latency:'),
-          h('span',{className:'mono'},writerInfo.latency+'ms')
+          h('span',null,'Period:'),
+          h('span',{className:'mono'},writerInfo.period+'ms')
         ),
         h('div',{className:'metadata-row'},
           h('span',null,'Owner:'),

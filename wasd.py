@@ -11,8 +11,8 @@ from sshkeyboard import listen_keyboard, stop_listening
 import numpy as np
 
 # Configuration
-TURN_SPEED = 6.0  # Angular speed in m/s
-SPEED = 0.75  # Linear speed in rad/s
+TURN_SPEED = 2.0
+SPEED = 0.5
 # Global variables
 writer = None
 

@@ -33,7 +33,7 @@ def main():
         while True:
             results = []
             if r_jpeg.ready():
-                # Decode JPEG and get left image (first half of stereo)
+                # Decode JPEG and get second image (second half of stereo)
                 stereo_img = cv2.imdecode(r_jpeg.data['jpeg'], cv2.IMREAD_COLOR)
                 # Convert BGR to RGB and get left half
                 results = model(stereo_img[:, :img_width, :], classes=[0], conf=0.35, iou=0.45)
