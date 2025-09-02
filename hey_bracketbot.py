@@ -21,7 +21,7 @@ CFG_LED_STRIP = Config("led_strip")
 def phonetic(token):
     return metaphone.doublemetaphone(token)[0]   # primary code
 
-def detect_wake_word(text, target_word):
+def detect_wake_word(text, target_word, threshold=0.5):
     """Detect wake words using phonetic matching"""
     if not text:
         return False
@@ -36,7 +36,7 @@ def detect_wake_word(text, target_word):
     for word in words:
         word_code = phonetic(word)
         similarity = 1 - textdistance.levenshtein.normalized_distance(word_code, target_code)
-        if similarity > 0.7:  # Threshold for phonetic match
+        if similarity > 0.5:  # Threshold for phonetic match
             print(f"Detected '{target_word}' as '{word}' (similarity: {similarity:.2f})", flush=True)
             return True
         print(f"No match found for '{target_word}' in '{word}' (similarity: {similarity:.2f})", flush=True)
@@ -69,22 +69,22 @@ def main():
             if r_transcript.ready():
                 text = r_transcript.data['text']
                 if text:
-                    if detect_wake_word(text, "follow"):
+                    if detect_wake_word(text, "follow", 0.5):
                         start_app("follow")
                         color = [0, 255, 0]
-                    if detect_wake_word(text, "stop"):
+                    if detect_wake_word(text, "stop", 0.5):
                         stop_app("follow")
                         color = [255, 0, 0]
-                    if detect_wake_word(text, "talk"):
+                    if detect_wake_word(text, "talk", 1.0):
                         start_app("realtime")
                         color = [255, 0, 255]
-                    if detect_wake_word(text, "quiet"):
+                    if detect_wake_word(text, "quiet", 1.0):
                         stop_app("realtime")
                         color = [0, 0, 0]
-                    if detect_wake_word(text, "wave"):
+                    if detect_wake_word(text, "hello", 1.0):
                         start_app("mimic")
                         color = [255, 255, 0]
-                    if detect_wake_word(text, "number"):
+                    if detect_wake_word(text, "number", 1.0):
                         speak_hostname()
                         color = [0, 255, 255]  # Cyan color for number speaking
             rgb_array[:, :] = color
