@@ -55,8 +55,10 @@
 </script>
 <script type="module">
   import * as THREE from 'three';
+  import { OrbitControls } from 'https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/controls/OrbitControls.js';
   window.THREE = THREE;
   window.dispatchEvent(new Event('threejs-ready'));
+  window.OrbitControls = OrbitControls;
 </script>
 
 <script>
@@ -503,18 +505,33 @@
       scene.background = new THREE.Color(0x0a0a0a);
       sceneRef.current = scene;
 
+
       const camera = new THREE.PerspectiveCamera(75, W/H, 0.01, 100);
-      camera.position.set(0,0.5,3); camera.lookAt(0,0,0);
+      camera.position.set(0,-0.05,3); camera.lookAt(0,0,0);
+      camera.up.set(0,0,1);
       cameraRef.current = camera;
+
 
       const renderer = new THREE.WebGLRenderer({antialias:true});
       renderer.setSize(W,H); renderer.setPixelRatio(window.devicePixelRatio);
       el.appendChild(renderer.domElement);
       rendererRef.current = renderer;
 
+      const controls = new window.OrbitControls(camera, renderer.domElement);
+      controls.object.up.set(0,0,1);     // Z is up
+      controls.screenSpacePanning = false;
+      controls.enableDamping = true;
+      controls.dampingFactor = 0.05;
+      controls.rotateSpeed = 0.8;
+      controls.zoomSpeed = 0.6;
+      controls.panSpeed = 0.6;
+
       scene.add(new THREE.AmbientLight(0xffffff,0.6));
       const dir = new THREE.DirectionalLight(0xffffff,0.4); dir.position.set(5,5,5); scene.add(dir);
-      scene.add(new THREE.GridHelper(10,10,0x444444,0x222222));
+      const grid = new THREE.GridHelper(10, 10, 0x444444, 0x222222);
+      // rotate 90° around X so grid lies in XY
+      grid.rotation.x = Math.PI / 2;
+      scene.add(grid);
       scene.add(new THREE.AxesHelper(1));
 
       // Pre-create geometry and material
@@ -532,34 +549,15 @@
       materialRef.current = material;
       pointsRef.current = points;
 
-      const onMove = (e)=>{
-        if(!ctl.current.down) return;
-        const rect = el.getBoundingClientRect();
-        const nx = (e.clientX-rect.left)/W*2-1;
-        const ny = -(e.clientY-rect.top)/H*2+1;
-        const dx = nx-ctl.current.x, dy = ny-ctl.current.y;
-        const sph = new THREE.Spherical(); sph.setFromVector3(camera.position);
-        sph.theta -= dx*2; sph.phi = clamp(sph.phi+dy*2, 0.1, Math.PI-0.1);
-        camera.position.setFromSpherical(sph); camera.lookAt(0,0,0);
-        ctl.current.x=nx; ctl.current.y=ny;
-      };
-      const onDown=(e)=>{ ctl.current.down=true;
-        const rect=el.getBoundingClientRect();
-        ctl.current.x=(e.clientX-rect.left)/W*2-1; ctl.current.y=-(e.clientY-rect.top)/H*2+1; };
-      const onUp=()=>{ ctl.current.down=false; };
-      const onWheel=(e)=>{ e.preventDefault(); camera.position.multiplyScalar(e.deltaY>0?1.1:0.9); camera.lookAt(0,0,0); };
-
       const onResize=()=>{
         const w=el.clientWidth, h=el.clientHeight;
         camera.aspect = w/h; camera.updateProjectionMatrix();
         renderer.setSize(w,h);
       };
 
-      el.addEventListener('mousemove',onMove); el.addEventListener('mousedown',onDown);
-      el.addEventListener('mouseup',onUp); el.addEventListener('mouseleave',onUp);
-      el.addEventListener('wheel',onWheel,{passive:false}); window.addEventListener('resize',onResize);
+      window.addEventListener('resize',onResize);
 
-      const tick=()=>{ rafRef.current = requestAnimationFrame(tick); renderer.render(scene,camera); }; tick();
+      const tick=()=>{ rafRef.current = requestAnimationFrame(tick); controls.update(); renderer.render(scene,camera);  }; tick();
 
       return ()=>{
         cancelAnimationFrame(rafRef.current);

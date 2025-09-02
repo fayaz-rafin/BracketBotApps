@@ -366,7 +366,6 @@ async def points_binary_websocket(websocket: WebSocket):
                 try:
                     # Pack binary data efficiently
                     num_points = int(data['num_points'])
-                    print(f"Binary WS: Sending {num_points} points")
                     if num_points > 0 and num_points < 100000:  # Sanity check
                         # Create a binary message with header + points + colors
                         # Header: 4 bytes (num_points as int32)
@@ -378,7 +377,6 @@ async def points_binary_websocket(websocket: WebSocket):
                         
                         # Send as binary message
                         await websocket.send_bytes(header + points_data + colors_data)
-                        print(f"Binary WS: Sent {len(header + points_data + colors_data)} bytes")
                 except Exception as e:
                     print(f"Error sending binary data: {e}")
                     
@@ -398,7 +396,7 @@ def main() -> None:
     port = int(os.environ.get('FLOW_PORT', '8002'))
     
     # Create queues with appropriate sizes
-    queues = {r: queue.Queue(maxsize=10 if r == 'camera.points' else 3) for r in READERS}
+    queues = {r: queue.Queue(maxsize=5 if r == 'camera.points' else 3) for r in READERS}
     readers = {r: Reader(r) for r in READERS}
     
     # Start UI thread
@@ -419,12 +417,8 @@ def main() -> None:
                     if readers[r].ready():
                         try:
                             data = readers[r].data
-                            if r == 'camera.points' and data is not None:
-                                print(f"Got camera.points data: num_points={data['num_points']}")
-                            # Put data in queue for all consumers
                             queues[r].put_nowait(data)
                         except queue.Full:
-                            # Drop oldest data
                             try:
                                 queues[r].get_nowait()
                             except queue.Empty:
