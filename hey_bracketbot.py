@@ -11,6 +11,7 @@ from bbos import Reader, Writer, Type, Config
 from bbos.app_manager import start_app, stop_app
 import metaphone
 import textdistance
+from pathlib import Path
 import numpy as np
 import subprocess
 import socket
@@ -84,6 +85,12 @@ def main():
                     if detect_wake_word(text, "hello", 1.0):
                         start_app("mimic")
                         color = [255, 255, 0]
+                    if detect_wake_word(text, "train", 1.0):
+                        traj_path = Path(__file__).parent / "mimic" / "traj.txt"
+                        if traj_path.exists():
+                            traj_path.unlink()
+                        start_app("mimic")
+                        color = [0, 100, 100]
                     if detect_wake_word(text, "number", 1.0):
                         speak_hostname()
                         color = [0, 255, 255]  # Cyan color for number speaking
