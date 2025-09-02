@@ -19,20 +19,20 @@ print(traj.shape)
 traj_path = Path(__file__).parent / "traj.txt"
 i = 0
 if not traj_path.exists():
-    print("Recording...", flush=True)
     with Writer("so101.torque", Type("so101_torque")) as w_torque:
+        print("Recording...", flush=True)
         w_torque['enable'] = np.zeros(CFG.dof, dtype=np.bool_)
-    with Reader("so101.state") as r_state:
-        while i < traj.shape[0]:
-            if r_state.ready():
-                traj[i] = r_state.data['pos']
-                i += 1
-    traj.tofile(traj_path)
-    # debug by saving plot to file of each joint
-    for i in range(CFG.dof):
-        plt.plot(traj[:,i])
-        plt.savefig(Path(__file__).parent / f"traj_{i}.png")
-        plt.close()
+        with Reader("so101.state") as r_state:
+            while i < traj.shape[0]:
+                if r_state.ready():
+                    traj[i] = r_state.data['pos']
+                    i += 1
+        traj.tofile(traj_path)
+        # debug by saving plot to file of each joint
+        for i in range(CFG.dof):
+            plt.plot(traj[:,i])
+            plt.savefig(Path(__file__).parent / f"traj_{i}.png")
+            plt.close()
 # Play back
 print("Playing back...", flush=True)
 
