@@ -11,8 +11,8 @@ from sshkeyboard import listen_keyboard, stop_listening
 import numpy as np
 
 # Configuration
-TURN_SPEED = 2.0
-SPEED = 0.5
+TURN_SPEED = 0.5
+SPEED = 0.1
 # Global variables
 writer = None
 
@@ -28,9 +28,9 @@ def press(key):
     elif key.lower() == 's':
         speed = -SPEED
     elif key.lower() == 'a':
-        turn = -TURN_SPEED
-    elif key.lower() == 'd':
         turn = TURN_SPEED
+    elif key.lower() == 'd':
+        turn = -TURN_SPEED
     elif key.lower() == 'q':
         stop_listening()
     writer['twist'] = [speed, turn]

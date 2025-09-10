@@ -19,10 +19,10 @@ TARGET_WIDTH_RATIO = 0.3  # Target width of person relative to image width
 WIDTH_THRESHOLD = 0.05  # Acceptable range around target width
 
 # Speed control parameters
-TURN_SPEED = 2
-MAX_FORWARD_SPEED = 2.5 # Maximum speed when person is far
+TURN_SPEED = 0.5
+MAX_FORWARD_SPEED = 2.0 # Maximum speed when person is far
 MIN_FORWARD_SPEED = 0.05  # Minimum speed when person is close
-SPEED_SCALE_FACTOR = 1  # How aggressively speed changes with distance
+SPEED_SCALE_FACTOR = 0.2  # How aggressively speed changes with distance
 
 def main():
     model = Detector("yolo11s")
@@ -74,9 +74,9 @@ def main():
                 if abs(x_error) < CENTER_THRESHOLD:
                     cmd[:] = [forward_speed, 0]  # Note: negative sign to match robot's convention
                 elif x_error > 0:
-                    cmd[:] = [forward_speed, TURN_SPEED*abs(x_error)]  # Note: negative sign
-                else:
                     cmd[:] = [forward_speed, -TURN_SPEED*abs(x_error)]  # Note: negative sign
+                else:
+                    cmd[:] = [forward_speed, TURN_SPEED*abs(x_error)]  # Note: negative sign
             with w_ctrl.buf() as b:
                 b['twist'] = cmd
 
